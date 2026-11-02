@@ -370,6 +370,8 @@ function songDto(raw) {
     artists: artistsOf(raw.singer || raw.singers),
     album: album.mid ? { id: String(album.mid), name: album.name || "" } : null,
     durationMs: Number(raw.interval || 0) * 1000,
+    publishTimeMs: publishMs(raw.time_public || raw.publishDate),
+    genre: raw.genre || "",
     artworkUrl: secureUrl(raw.albummid
       ? "https://y.gtimg.cn/music/photo_new/T002R300x300M000" + raw.albummid + ".jpg"
       : (album.pmid ? "https://y.gtimg.cn/music/photo_new/T002R300x300M000" + album.pmid + ".jpg" : "")),
@@ -420,6 +422,7 @@ function albumDto(raw, songs) {
     name: raw.albumName || raw.name || "",
     artworkUrl: secureUrl(photoUrl("T002", raw.pmid || mid)),
     publishTimeMs: publishMs(raw.publishDate),
+    releaseType: String(raw.albumType || raw.type || ""),
     description: raw.desc || "",
     trackCount: Number(raw.totalNum || (songs || []).length || 0),
     artists: artists,
@@ -520,6 +523,32 @@ function searchSongs(args) {
     var items = songsOf(data.list);
     var hasMore = page * Number(args.limit || 50) < Number(data.totalnum || items.length);
     return { items: items, nextCursor: hasMore ? String(page * Number(args.limit || 50)) : "" };
+  });
+}
+
+function searchArtists(args) {
+  var offset = Math.max(0, Number(args.cursor || 0)), limit = Math.min(50, Number(args.limit || 20));
+  function mapped(rows, total) {
+    return {items: rows.map(function (row) {
+      return {id: String(row.singerMID || row.singer_mid || row.mid || ""), name: row.singerName || row.singer_name || row.name || "",
+        artworkUrl: photoUrl("T001", row.singerMID || row.singer_mid || row.mid),
+        songCount: Number(row.songNum || row.song_num || 0), albumCount: Number(row.albumNum || row.album_num || 0)};
+    }).filter(function (row) { return row.id && row.name; }), nextCursor: rows.length && offset + rows.length < total ? String(offset + rows.length) : ""};
+  }
+  return musicu({search: {module: "music.search.SearchCgiService", method: "DoSearchForQQMusicDesktop",
+    param: {query: args.query || "", search_type: 1, page_num: Math.floor(offset/limit)+1, num_per_page: limit, remoteplace: "txt.yqq.center"}}})
+  .then(function (body) {
+    var data = body.search && body.search.data || {}, singer = (data.body || {}).singer || {};
+    return mapped(singer.list || [], Number((data.meta || {}).sum || 0));
+  }).catch(function () { return {items: [], nextCursor: ""}; }).then(function (page) {
+    if (page.items.length || offset > 0) return page;
+    // The desktop endpoint can return an empty success under upstream filtering.
+    // QQ's suggestion endpoint still supplies genuine, canonical singer mids.
+    return httpGetJson("https://c6.y.qq.com/splcloud/fcgi-bin/smartbox_new.fcg?format=json&key="
+      + encodeURIComponent(args.query || ""), REF_SEARCH, UA_MOBILE).then(function (body) {
+      if (Number(body.code || 0) !== 0) throw new Error("歌手搜索失败");
+      return mapped(((body.data || {}).singer || {}).itemlist || [], 0);
+    });
   });
 }
 
@@ -1235,6 +1264,9 @@ function artistDetails(args) {
   var mid = String(args.id || "");
   if (!mid) throw new Error("缺少歌手 ID");
   var limit = Math.min(100, Math.max(1, Number(args.limit || 50)));
+  var offset = Math.max(0, Number(args.cursor || 0));
+  var songOffset = args.section === "songs" ? offset : 0;
+  var albumOffset = args.section === "albums" ? offset : 0;
   return musicu({
     info: {
       module: "music.musichallSinger.SingerInfoInter",
@@ -1244,12 +1276,12 @@ function artistDetails(args) {
     songs: {
       module: "musichall.song_list_server",
       method: "GetSingerSongList",
-      param: { singerMid: mid, begin: 0, num: limit, order: 1 }
+      param: { singerMid: mid, begin: songOffset, num: limit, order: 1 }
     },
     albums: {
       module: "music.musichallAlbum.AlbumListServer",
       method: "GetAlbumList",
-      param: { singerMid: mid, begin: 0, num: limit, order: 1 }
+      param: { singerMid: mid, begin: albumOffset, num: limit, order: 1 }
     }
   }).then(function (body) {
     var singer = ((body.info && body.info.data || {}).singer_list || [])[0] || {};
@@ -1266,6 +1298,8 @@ function artistDetails(args) {
       description: extra.desc || "",
       albumCount: Number(albumData.total || albums.length || 0),
       songCount: Number(songData.totalNum || songs.length || 0),
+      nextSongCursor: songOffset + songs.length < Number(songData.totalNum || 0) && songs.length ? String(songOffset + songs.length) : "",
+      nextAlbumCursor: albumOffset + albums.length < Number(albumData.total || 0) && albums.length ? String(albumOffset + albums.length) : "",
       songs: songs,
       albums: albums
     };
@@ -1682,9 +1716,32 @@ function login(args) {
 
 var unblock = require("./unblock");
 
+// Source-owned QQ comment reader, kept outside the player host.
+function comments(args) {
+  var page = Math.max(0, Number(args.cursor || 0));
+  var hot = args.sort === "hot";
+  return songNumericId(String(args.id)).then(function (id) {
+    return httpGetText("https://c.y.qq.com/base/fcgi-bin/fcg_global_comment_h5.fcg?format=json&inCharset=utf8&outCharset=utf-8&platform=yqq.json&needNewCode=0&biztype=1&topid="
+        + encodeURIComponent(id) + "&cmd=8&pagenum=" + page + "&pagesize=20", REF_BASE);
+  }).then(function (text) {
+    var body = JSON.parse(text);
+    if (Number(body.code || 0) !== 0) throw new Error("QQ 评论请求失败，请稍后重试");
+    var group = hot ? (body.hot_comment || {}) : (body.comment || {});
+    var rows = group.commentlist || [];
+    return {items: rows.slice(0,20).map(function (row) {
+      return {id: String(row.commentid), author: String(row.nick || "音乐用户"),
+        content: String(row.rootcommentcontent || row.commentcontent || ""),
+        time: new Date(Number(row.time || 0)*1000).toISOString().slice(0,16).replace("T"," ") + " UTC",
+        likeCount: Number(row.praisenum || 0)};
+    }), nextCursor: !hot && rows.length && (page + 1)*20 < Number(group.commenttotal || 0) ? String(page+1) : ""};
+  });
+}
+
 module.exports = {
   handlers: {
+    comments: comments,
     searchSongs: searchSongs,
+    searchArtists: searchArtists,
     songDetails: songDetails,
     playlistDetails: playlistDetails,
     artistDetails: artistDetails,

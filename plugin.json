@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "id": "qq",
-  "name": "QQ音乐",
-  "version": "0.7.3",
+  "name": "QQ音乐（定制版）",
+  "version": "0.7.3.3",
   "apiVersion": "1.0",
-  "minHostVersion": "1.6.6",
+  "minHostVersion": "1.9.11-custom",
   "entry": "src/main.js",
-  "publisher": "TIMER-err",
+  "publisher": "tengyuanxingxing Custom",
   "capabilities": [
     "searchSongs",
     "songDetails",
@@ -22,7 +22,9 @@
     "playlistMutation",
     "playlistReorder",
     "playlistCover",
-    "login"
+    "login",
+    "comments",
+    "searchArtists"
   ],
   "permissions": [
     "network",
@@ -58,7 +60,8 @@
     "*.joox.com",
     "*.tencentmusic.com",
     "music.126.net",
-    "*.music.126.net"
+    "*.music.126.net",
+    "c6.y.qq.com"
   ],
   "networkMethods": [
     "GET",
